@@ -2,7 +2,7 @@
 
 Bitfocus Companion module for Telemetrics robotic pan/tilt heads (PT-LP, PT-CP, DS-4) and the RCCP-1 control panel. See [HELP.md](./companion/HELP.md).
 
-Telemetrics no longer supports this hardware. The command set comes from the PT-LP user manual (as used by [telemetrics-moco](https://github.com/shanereetz/telemetrics-moco)) and the RCCP-1 control manual (quoted in [companion-module-requests#1157](https://github.com/bitfocus/companion-module-requests/issues/1157)). Discovery and port numbers were checked against Telemetrics' RCP software.
+Telemetrics no longer supports this hardware. The command set comes from the serial-control appendix of the PT-HP-S4 user manual (same S4 generation as the PT-LP-S4), the S2 manual, [telemetrics-moco](https://github.com/shanereetz/telemetrics-moco) and the RCCP-1 control manual (quoted in [companion-module-requests#1157](https://github.com/bitfocus/companion-module-requests/issues/1157)). Discovery and port numbers were checked against Telemetrics' RCP software.
 
 ## Development
 
@@ -18,7 +18,7 @@ Companion 5 can load the working copy directly with `--extra-module-path` pointi
 
 ## Status
 
-Tested end to end in Companion 5.0.5 against the simulated head. Not yet tested on a real head.
+Tested end to end in Companion 5.0.5 against the simulated head (`tools/mock-head.ts`). Not yet tested on a real head. The manuals do not say whether the head's Ethernet port carries the same ASCII protocol unchanged; a DS-4 serial port does.
 
 ## License
 

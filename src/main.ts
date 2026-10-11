@@ -28,7 +28,7 @@ export { UpgradeScripts }
 export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 	config!: ModuleConfig // Setup in init()
 
-	lastShot = 0
+	lastShot = -1
 	selectedCamera = 0
 	moving = false
 
@@ -47,7 +47,15 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 		this.updateFeedbacks()
 		this.updatePresets()
 		this.updateVariableDefinitions()
-		this.setVariableValues({ last_shot: 0, selected_camera: 0, pan_position: '', tilt_position: '', last_response: '' })
+		this.setVariableValues({
+			last_shot: '',
+			selected_camera: 0,
+			pan_position: '',
+			tilt_position: '',
+			zoom_position: '',
+			focus_position: '',
+			last_response: '',
+		})
 
 		this.#connect()
 	}
@@ -85,14 +93,18 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 		return this.#tcp?.isConnected ?? false
 	}
 
-	/** Sends one protocol command (without CR). Returns false when not connected. */
-	send(cmd: string): boolean {
+	/**
+	 * Sends one protocol command (without CR). Control commands get a leading <CAN>,
+	 * because the head ignores everything else while a shot recall is running.
+	 * Returns false when not connected.
+	 */
+	send(cmd: string, control = true): boolean {
 		if (!this.#tcp?.isConnected) {
 			this.log('warn', `Not connected, dropped: ${cmd}`)
 			return false
 		}
 		this.log('debug', `> ${cmd}`)
-		return this.#tcp.send(frame(cmd, this.config.prefix ?? ''))
+		return this.#tcp.send(frame(cmd, this.config.prefix ?? '', control && this.config.mode !== 'rccp1'))
 	}
 
 	/** Pan/tilt with signed speeds in percent; applies the invert settings. */
@@ -170,6 +182,7 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 		switch (msg.type) {
 			case 'position':
 				this.setVariableValues({ pan_position: msg.pan, tilt_position: msg.tilt })
+				if (msg.zoom !== undefined) this.setVariableValues({ zoom_position: msg.zoom, focus_position: msg.focus })
 				break
 			case 'sts12':
 				this.setVariableValues({ last_response: line.trim() })

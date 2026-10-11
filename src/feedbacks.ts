@@ -27,7 +27,7 @@ export function UpdateFeedbacks(self: ModuleInstance): void {
 			name: 'Shot was recalled last',
 			type: 'boolean',
 			defaultStyle: { bgcolor: 0xc00000, color: 0xffffff },
-			options: [{ id: 'shot', type: 'number', label: 'Shot', default: 1, min: 1, max: 240 }],
+			options: [{ id: 'shot', type: 'number', label: 'Shot', default: 1, min: 0, max: 255 }],
 			callback: ({ options }) => self.lastShot === options.shot,
 		},
 		selected_camera: {

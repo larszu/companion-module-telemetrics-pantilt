@@ -5,7 +5,7 @@
 	"name": "Telemetrics Pan/Tilt",
 	"shortname": "telemetrics",
 	"description": "Telemetrics robotic pan/tilt heads (PT-LP/PT-CP, DS-4) and RCCP-1 over TCP",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"license": "MIT",
 	"repository": "git+https://github.com/larszu/companion-module-telemetrics-pantilt.git",
 	"bugs": "https://github.com/larszu/companion-module-telemetrics-pantilt/issues",

@@ -62,9 +62,9 @@ export function GetConfigFields(): SomeCompanionConfigField[] {
 		{
 			type: 'checkbox',
 			id: 'takeControl',
-			label: 'Take control on connect (L 1)',
+			label: 'Send L 1 on connect (older PT-LP heads)',
 			width: 4,
-			default: true,
+			default: false,
 		},
 		{
 			type: 'checkbox',

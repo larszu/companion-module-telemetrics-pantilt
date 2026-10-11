@@ -50,8 +50,37 @@ export function UpdatePresets(self: ModuleInstance): void {
 			type: 'simple',
 			name: `Shot ${shot}`,
 			style: { text: `SHOT\\n${shot}`, size: '18', color: 0xffffff, bgcolor: 0x000000 },
-			steps: [{ down: [{ actionId: 'recall_shot', options: { shot, useTime: false, time: 3 } }], up: [] }],
+			steps: [
+				{
+					down: [],
+					up: [{ actionId: 'recall_shot', options: { shot, useTime: false, time: 3 } }],
+					2000: { options: { runWhileHeld: true }, actions: [{ actionId: 'store_shot', options: { shot } }] },
+				},
+			],
 			feedbacks: [{ feedbackId: 'last_shot', options: { shot }, style: { bgcolor: 0xc00000, color: 0xffffff } }],
+		}
+	}
+
+	const lensIds: string[] = []
+	const lens: [string, 'zoom' | 'focus', 'minus' | 'plus', string][] = [
+		['zoom_tele', 'zoom', 'minus', 'ZOOM\\nIN'],
+		['zoom_wide', 'zoom', 'plus', 'ZOOM\\nOUT'],
+		['focus_near', 'focus', 'minus', 'FOCUS\\nNEAR'],
+		['focus_far', 'focus', 'plus', 'FOCUS\\nFAR'],
+	]
+	for (const [id, actionId, direction, text] of lens) {
+		lensIds.push(id)
+		presets[id] = {
+			type: 'simple',
+			name: text.replace('\\n', ' ').toLowerCase(),
+			style: { text, size: '14', color: 0xffffff, bgcolor: 0x202020 },
+			steps: [
+				{
+					down: [{ actionId, options: { direction, speed: 50 } }],
+					up: [{ actionId, options: { direction: 'stop', speed: 50 } }],
+				},
+			],
+			feedbacks: [],
 		}
 	}
 
@@ -98,9 +127,30 @@ export function UpdatePresets(self: ModuleInstance): void {
 			],
 		},
 		{
+			id: 'lens',
+			name: 'Lens',
+			definitions: [
+				{
+					id: 'lens',
+					name: 'Zoom and focus',
+					description: 'Moves while pressed, stops on release.',
+					type: 'simple',
+					presets: lensIds,
+				},
+			],
+		},
+		{
 			id: 'shots',
 			name: 'Shots',
-			definitions: [{ id: 'shots', name: 'Recall shot', type: 'simple', presets: shotIds }],
+			definitions: [
+				{
+					id: 'shots',
+					name: 'Recall and store shots',
+					description: 'Short press recalls the shot, holding for 2 seconds stores the current position.',
+					type: 'simple',
+					presets: shotIds,
+				},
+			],
 		},
 		{
 			id: 'rccp1',

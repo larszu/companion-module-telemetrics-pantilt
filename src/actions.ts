@@ -8,17 +8,31 @@ import {
 	STOP_CMD,
 	TAKE_CONTROL_CMD,
 	directionVector,
+	lensCmd,
 	recallShotCmd,
 	speedToVelocity,
+	stepCmd,
+	storeShotCmd,
 	type Direction,
+	type LensAxis,
 } from './protocol.js'
+
+type LensDirection = 'minus' | 'plus' | 'stop'
 
 export type ActionsSchema = {
 	move: { options: { direction: Direction; speed: number } }
 	stop: { options: Record<string, never> }
 	pan: { options: { speed: number } }
 	tilt: { options: { speed: number } }
+	zoom: { options: { direction: LensDirection; speed: number } }
+	focus: { options: { direction: LensDirection; speed: number } }
+	iris: { options: { direction: LensDirection; speed: number } }
+	focus_step: { options: { steps: number } }
+	iris_step: { options: { steps: number } }
+	iris_mode: { options: { mode: string } }
+	extender: { options: { on: boolean } }
 	recall_shot: { options: { shot: number; useTime: boolean; time: number } }
+	store_shot: { options: { shot: number } }
 	select_camera: { options: { camera: number } }
 	take_control: { options: Record<string, never> }
 	query_position: { options: Record<string, never> }
@@ -36,7 +50,32 @@ const DIRECTION_LABELS: Record<Direction, string> = {
 	'down-right': 'Down right',
 }
 
+const SIGN: Record<LensDirection, number> = { minus: -1, plus: 1, stop: 0 }
+
 export function UpdateActions(self: ModuleInstance): void {
+	/** Lens velocity: "minus" moves towards 0 (tele / near / close), "plus" towards 32767. */
+	const lensAction = (name: string, axis: LensAxis, minus: string, plus: string) => ({
+		name,
+		description: 'Moves until stopped. In presets: move on press, stop on release.',
+		options: [
+			{
+				id: 'direction' as const,
+				type: 'dropdown' as const,
+				label: 'Direction',
+				default: 'minus' as const,
+				choices: [
+					{ id: 'minus' as const, label: minus },
+					{ id: 'plus' as const, label: plus },
+					{ id: 'stop' as const, label: 'Stop' },
+				],
+			},
+			{ id: 'speed' as const, type: 'number' as const, label: 'Speed (%)', default: 50, min: 1, max: 100, range: true },
+		],
+		callback: async ({ options }: { options: { direction: LensDirection; speed: number } }) => {
+			self.send(lensCmd(axis, SIGN[options.direction] * options.speed))
+		},
+	})
+
 	self.setActionDefinitions({
 		move: {
 			name: 'Pan/tilt: move',
@@ -57,7 +96,8 @@ export function UpdateActions(self: ModuleInstance): void {
 			},
 		},
 		stop: {
-			name: 'Pan/tilt: stop',
+			name: 'Stop all motion',
+			description: 'R: stops pan, tilt, zoom, focus and iris.',
 			options: [],
 			callback: async () => {
 				if (self.send(STOP_CMD)) self.setMoving(false)
@@ -81,11 +121,61 @@ export function UpdateActions(self: ModuleInstance): void {
 				self.send(`T ${speedToVelocity(speed)}`)
 			},
 		},
+		zoom: lensAction('Lens: zoom', 'Z', 'Tele (in)', 'Wide (out)'),
+		focus: lensAction('Lens: focus', 'F', 'Near', 'Far'),
+		iris: lensAction('Lens: iris', 'I', 'Close', 'Open'),
+		focus_step: {
+			name: 'Lens: focus step',
+			description: 'FI: relative focus step, -255..255.',
+			options: [{ id: 'steps', type: 'number', label: 'Steps', default: 10, min: -255, max: 255 }],
+			callback: async ({ options }) => {
+				self.send(stepCmd('FI', options.steps))
+			},
+		},
+		iris_step: {
+			name: 'Lens: iris step',
+			description: 'II: relative iris step, -255..255. Positive closes.',
+			options: [{ id: 'steps', type: 'number', label: 'Steps', default: 10, min: -255, max: 255 }],
+			callback: async ({ options }) => {
+				self.send(stepCmd('II', options.steps))
+			},
+		},
+		iris_mode: {
+			name: 'Lens: iris mode',
+			options: [
+				{
+					id: 'mode',
+					type: 'dropdown',
+					label: 'Mode',
+					default: 'IA',
+					choices: [
+						{ id: 'IA', label: 'Auto (camera controls iris)' },
+						{ id: 'IL', label: 'Local (head controls iris)' },
+					],
+				},
+			],
+			callback: async ({ options }) => {
+				self.send(options.mode === 'IL' ? 'IL' : 'IA')
+			},
+		},
+		extender: {
+			name: 'Lens: extender',
+			options: [{ id: 'on', type: 'checkbox', label: 'On', default: true }],
+			callback: async ({ options }) => {
+				self.send(options.on ? 'G' : 'g')
+			},
+		},
 		recall_shot: {
 			name: 'Recall shot',
 			options: [
 				{ id: 'shot', type: 'number', label: 'Shot', default: 1, min: SHOT_MIN, max: SHOT_MAX },
-				{ id: 'useTime', type: 'checkbox', label: 'Override move time', default: false, disableAutoExpression: true },
+				{
+					id: 'useTime',
+					type: 'checkbox',
+					label: 'Override move time (RCCP-1 only)',
+					default: false,
+					disableAutoExpression: true,
+				},
 				{
 					id: 'time',
 					type: 'number',
@@ -97,9 +187,16 @@ export function UpdateActions(self: ModuleInstance): void {
 				},
 			],
 			callback: async ({ options }) => {
-				if (self.send(recallShotCmd(options.shot, options.useTime ? options.time : undefined))) {
-					self.shotRecalled(options.shot)
-				}
+				const time = options.useTime && self.config.mode === 'rccp1' ? options.time : undefined
+				if (self.send(recallShotCmd(options.shot, time))) self.shotRecalled(options.shot)
+			},
+		},
+		store_shot: {
+			name: 'Store shot',
+			description: 'E: stores the current position under this shot number.',
+			options: [{ id: 'shot', type: 'number', label: 'Shot', default: 1, min: SHOT_MIN, max: SHOT_MAX }],
+			callback: async ({ options }) => {
+				if (self.send(storeShotCmd(options.shot))) self.shotRecalled(options.shot)
 			},
 		},
 		select_camera: {
@@ -111,7 +208,7 @@ export function UpdateActions(self: ModuleInstance): void {
 			},
 		},
 		take_control: {
-			name: 'Take control (L 1)',
+			name: 'Take control (L 1, older PT-LP heads)',
 			options: [],
 			callback: async () => {
 				self.send(TAKE_CONTROL_CMD)
@@ -121,7 +218,7 @@ export function UpdateActions(self: ModuleInstance): void {
 			name: 'Query position',
 			options: [],
 			callback: async () => {
-				self.send(QUERY_POSITION_CMD)
+				self.send(QUERY_POSITION_CMD, false)
 			},
 		},
 		raw: {

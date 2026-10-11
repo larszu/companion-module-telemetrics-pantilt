@@ -6,9 +6,12 @@ import {
 	frame,
 	panTiltCmd,
 	parseLine,
+	lensCmd,
 	recallShotCmd,
 	selectCameraCmd,
 	speedToVelocity,
+	stepCmd,
+	storeShotCmd,
 	sts12Checksum,
 } from '../src/protocol.ts'
 
@@ -27,11 +30,20 @@ test('directions: pan +1 = left, tilt +1 = up', () => {
 	assert.equal(panTiltCmd(0, 0), 'P 16383 T 16383')
 })
 
-test('shot recall', () => {
-	assert.equal(recallShotCmd(12), 'C12')
-	assert.equal(recallShotCmd(12, 5), 'C12 5')
-	assert.equal(recallShotCmd(999, 99), 'C240 30')
-	assert.equal(recallShotCmd(0), 'C1')
+test('shots 0..255: recall and store', () => {
+	assert.equal(recallShotCmd(12), 'C 12')
+	assert.equal(recallShotCmd(12, 5), 'C 12 5')
+	assert.equal(recallShotCmd(999, 99), 'C 255 30')
+	assert.equal(recallShotCmd(-3), 'C 0')
+	assert.equal(storeShotCmd(23), 'E 23')
+})
+
+test('lens velocity and steps', () => {
+	assert.equal(lensCmd('Z', -100), 'Z 0')
+	assert.equal(lensCmd('F', 0), 'F 16383')
+	assert.equal(lensCmd('I', 100), 'I 32767')
+	assert.equal(stepCmd('FI', -400), 'FI -255')
+	assert.equal(stepCmd('II', 10), 'II 10')
 })
 
 test('STS-12 camera select matches the RCCP-1 manual example', () => {
@@ -40,6 +52,7 @@ test('STS-12 camera select matches the RCCP-1 manual example', () => {
 	assert.equal(selectCameraCmd(50), '\\ 0 50 0 206')
 	assert.equal(frame(selectCameraCmd(1)), '\\ 0 1 0 255\r')
 	assert.equal(frame('C3', 'P0'), 'P0C3\r')
+	assert.equal(frame('R', '', true), '\x18R\r')
 })
 
 test('parses position and STS-12 replies across chunk borders', () => {
@@ -50,5 +63,6 @@ test('parses position and STS-12 replies across chunk borders', () => {
 		{ type: 'position', pan: 2048, tilt: 1022 },
 		{ type: 'sts12', code: 8 },
 	])
+	assert.deepEqual(parseLine('-120 45 512 1000'), { type: 'position', pan: -120, tilt: 45, zoom: 512, focus: 1000 })
 	assert.equal(parseLine('  '), null)
 })

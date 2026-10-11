@@ -2,21 +2,26 @@
  * Telemetrics pan/tilt serial protocol (ASCII, CR-terminated).
  *
  * Sources:
- * - PT-LP user manual, as implemented in github.com/shanereetz/telemetrics-moco:
- *   `L 1` take control, `P <v>` / `T <v>` velocity (0..32767, 16383 = still),
- *   `R` stop, `pt` query position -> "<pan> <tilt>".
+ * - PT-HP-S4 user manual, appendix "Serial control" (same S4 generation as the PT-LP-S4):
+ *   velocities `P` `T` `Z` `F` `I` 0..32767 (16383 = still), `R` stop all,
+ *   `C n` / `E n` recall / store preset 0..255, queries `p` `t` `z` `f` `i`,
+ *   `<CAN>` (0x18) aborts a running recall and should precede control lines.
+ *   Queries in one line answer in order: `p t z f` -> "<pan> <tilt> <zoom> <focus>".
+ * - PT-LP manual as implemented in github.com/shanereetz/telemetrics-moco: `L 1` take control.
  * - RCCP-1 control manual (quoted in bitfocus/companion-module-requests#1157):
  *   `C<shot> [seconds]` recall shot, STS-12 camera select `\ unit port cmd chksum`.
  */
 
 export const CR = '\r'
+/** Aborts a running preset recall; the head ignores everything else until the recall ends. */
+export const CAN = '\x18'
 
 export const VELOCITY_MIN = 0
 export const VELOCITY_NEUTRAL = 16383
 export const VELOCITY_MAX = 32767
 
-export const SHOT_MIN = 1
-export const SHOT_MAX = 240
+export const SHOT_MIN = 0
+export const SHOT_MAX = 255
 export const SHOT_TIME_MAX = 30
 
 export type Direction = 'up' | 'down' | 'left' | 'right' | 'up-left' | 'up-right' | 'down-left' | 'down-right'
@@ -53,14 +58,30 @@ export function panTiltCmd(panPercent: number, tiltPercent: number): string {
 	return `P ${speedToVelocity(panPercent)} T ${speedToVelocity(tiltPercent)}`
 }
 
+export type LensAxis = 'Z' | 'F' | 'I'
+
+/** Lens velocity. Positive = wide (zoom), far (focus), open (iris). */
+export function lensCmd(axis: LensAxis, speedPercent: number): string {
+	return `${axis} ${speedToVelocity(speedPercent)}`
+}
+
+/** Relative focus/iris step, -255..255. Iris: positive closes. */
+export function stepCmd(axis: 'FI' | 'II', steps: number): string {
+	return `${axis} ${clamp(Math.round(steps), -255, 255)}`
+}
+
+export function storeShotCmd(shot: number): string {
+	return `E ${clamp(Math.round(shot), SHOT_MIN, SHOT_MAX)}`
+}
+
 export const STOP_CMD = 'R'
 export const TAKE_CONTROL_CMD = 'L 1'
-export const QUERY_POSITION_CMD = 'pt'
+export const QUERY_POSITION_CMD = 'p t z f'
 
 export function recallShotCmd(shot: number, seconds?: number): string {
 	const n = clamp(Math.round(shot), SHOT_MIN, SHOT_MAX)
-	if (seconds === undefined || Number.isNaN(seconds)) return `C${n}`
-	return `C${n} ${clamp(Math.round(seconds), 0, SHOT_TIME_MAX)}`
+	if (seconds === undefined || Number.isNaN(seconds)) return `C ${n}`
+	return `C ${n} ${clamp(Math.round(seconds), 0, SHOT_TIME_MAX)}`
 }
 
 /** STS-12 checksum: unit + port + cmd + chksum = 0 (mod 256). */
@@ -74,18 +95,25 @@ export function selectCameraCmd(port: number, unit = 0, cmd = 0): string {
 }
 
 /** Frame a command for the wire: optional prefix (some servers expect e.g. "P0") and CR. */
-export function frame(cmd: string, prefix = ''): string {
-	return `${prefix}${cmd}${CR}`
+export function frame(cmd: string, prefix = '', cancel = false): string {
+	return `${cancel ? CAN : ''}${prefix}${cmd}${CR}`
 }
 
 export type HeadMessage =
-	{ type: 'position'; pan: number; tilt: number } | { type: 'sts12'; code: number } | { type: 'other'; text: string }
+	| { type: 'position'; pan: number; tilt: number; zoom?: number; focus?: number }
+	| { type: 'sts12'; code: number }
+	| { type: 'other'; text: string }
 
 export function parseLine(line: string): HeadMessage | null {
 	const text = line.trim()
 	if (text === '') return null
-	const pos = /^(\d+)\s+(\d+)$/.exec(text)
-	if (pos) return { type: 'position', pan: Number(pos[1]), tilt: Number(pos[2]) }
+	const pos = /^(-?\d+)\s+(-?\d+)(?:\s+(\d+)\s+(\d+))?$/.exec(text)
+	if (pos) {
+		const [, pan, tilt, zoom, focus] = pos
+		return zoom === undefined
+			? { type: 'position', pan: Number(pan), tilt: Number(tilt) }
+			: { type: 'position', pan: Number(pan), tilt: Number(tilt), zoom: Number(zoom), focus: Number(focus) }
+	}
 	const sts = /^\\\s*(\d+)$/.exec(text)
 	if (sts) return { type: 'sts12', code: Number(sts[1]) }
 	return { type: 'other', text }
