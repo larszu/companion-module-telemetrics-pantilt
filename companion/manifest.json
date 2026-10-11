@@ -1,0 +1,27 @@
+{
+	"$schema": "../node_modules/@companion-module/base/assets/manifest.schema.json",
+	"type": "connection",
+	"id": "telemetrics-pantilt",
+	"name": "Telemetrics Pan/Tilt",
+	"shortname": "telemetrics",
+	"description": "Telemetrics robotic pan/tilt heads (PT-LP/PT-CP, DS-4) and RCCP-1 over TCP",
+	"version": "0.1.0",
+	"license": "MIT",
+	"repository": "git+https://github.com/larszu/companion-module-telemetrics-pantilt.git",
+	"bugs": "https://github.com/larszu/companion-module-telemetrics-pantilt/issues",
+	"maintainers": [
+		{
+			"name": "Lars Zumpe"
+		}
+	],
+	"runtime": {
+		"type": "node26",
+		"api": "nodejs-ipc",
+		"apiVersion": "0.0.0",
+		"entrypoint": "../dist/main.js"
+	},
+	"legacyIds": [],
+	"manufacturer": "Telemetrics",
+	"products": ["PT-LP-S4", "PT-LP-S5", "PT-CP-S5", "DS-4", "RCCP-1"],
+	"keywords": ["ptz", "robotics", "pan tilt", "camera"]
+}
