@@ -5,6 +5,9 @@
 	"compilerOptions": {
 		"outDir": "./dist",
 		"rootDir": "./src",
-		"verbatimModuleSyntax": true
+		"verbatimModuleSyntax": true,
+		"rewriteRelativeImportExtensions": true,
+		"allowImportingTsExtensions": true,
+		"erasableSyntaxOnly": true
 	}
 }

@@ -1,19 +1,13 @@
 import { InstanceBase, InstanceStatus, TCPHelper, type SomeCompanionConfigField } from '@companion-module/base'
-import { GetConfigFields, type ModuleConfig } from './config.js'
-import { UpdateVariableDefinitions, type VariablesSchema } from './variables.js'
-import { UpgradeScripts } from './upgrades.js'
-import { UpdateActions, type ActionsSchema } from './actions.js'
-import { UpdateFeedbacks, type FeedbacksSchema } from './feedbacks.js'
-import { UpdatePresets } from './presets.js'
-import {
-	LineSplitter,
-	QUERY_POSITION_CMD,
-	TAKE_CONTROL_CMD,
-	frame,
-	parseLine,
-	panTiltCmd,
-	selectCameraCmd,
-} from './protocol.js'
+import { GetConfigFields, resolveEndpoint, type ModuleConfig } from './config.ts'
+import { UpdateVariableDefinitions, type VariablesSchema } from './variables.ts'
+import { UpgradeScripts } from './upgrades.ts'
+import { UpdateActions, type ActionsSchema } from './actions.ts'
+import { UpdateFeedbacks, type FeedbacksSchema } from './feedbacks.ts'
+import { UpdatePresets } from './presets.ts'
+import { HeadSession, type ChangeKind, type HeadOptions, type StoredShot } from './head.ts'
+import { discover, ds4Owner } from './discovery.ts'
+import type { DiscoveredDevice, HeadPosition } from './protocol.ts'
 
 export type ModuleSchema = {
 	config: ModuleConfig
@@ -26,15 +20,12 @@ export type ModuleSchema = {
 export { UpgradeScripts }
 
 export default class ModuleInstance extends InstanceBase<ModuleSchema> {
-	config!: ModuleConfig // Setup in init()
-
-	lastShot = -1
-	selectedCamera = 0
-	moving = false
+	config!: ModuleConfig
+	head!: HeadSession
+	discovered: DiscoveredDevice[] = []
 
 	#tcp: TCPHelper | undefined
-	#lines = new LineSplitter()
-	#pollTimer: NodeJS.Timeout | undefined
+	#connectSeq = 0
 
 	constructor(internal: unknown) {
 		super(internal)
@@ -42,35 +33,43 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 
 	async init(config: ModuleConfig): Promise<void> {
 		this.config = config
+		this.head = new HeadSession(this.#headOptions(), (data) => this.#write(data))
+		this.head.shots = parseShotStore(config.shotStore)
+		this.head.on('change', (kind) => this.#onHeadChange(kind))
+		this.head.on('shots', (shots) => this.#saveShots(shots))
+		this.head.on('log', (level, message) => this.log(level, message))
 
 		this.updateActions()
 		this.updateFeedbacks()
 		this.updatePresets()
 		this.updateVariableDefinitions()
-		this.setVariableValues({
-			last_shot: '',
-			selected_camera: 0,
-			pan_position: '',
-			tilt_position: '',
-			zoom_position: '',
-			focus_position: '',
-			last_response: '',
-		})
+		this.#updateAllVariables()
 
-		this.#connect()
+		void this.scanNetwork()
+		void this.#connect()
 	}
 
 	async destroy(): Promise<void> {
+		this.#connectSeq++
 		this.#disconnect()
+		this.head.destroy()
 	}
 
 	async configUpdated(config: ModuleConfig): Promise<void> {
 		this.config = config
-		this.#connect()
+		this.head.setOptions(this.#headOptions())
+		// The in-memory shots win: the config form may carry an older copy of the store.
+		const store = JSON.stringify(Object.fromEntries(this.head.shots))
+		if (config.shotStore !== store) {
+			this.config.shotStore = store
+			this.saveConfig(this.config, undefined)
+		}
+		void this.#connect()
 	}
 
 	getConfigFields(): SomeCompanionConfigField[] {
-		return GetConfigFields()
+		void this.scanNetwork()
+		return GetConfigFields(this.discovered)
 	}
 
 	updateActions(): void {
@@ -93,117 +92,193 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 		return this.#tcp?.isConnected ?? false
 	}
 
-	/**
-	 * Sends one protocol command (without CR). Control commands get a leading <CAN>,
-	 * because the head ignores everything else while a shot recall is running.
-	 * Returns false when not connected.
-	 */
-	send(cmd: string, control = true): boolean {
-		if (!this.#tcp?.isConnected) {
-			this.log('warn', `Not connected, dropped: ${cmd}`)
-			return false
-		}
-		this.log('debug', `> ${cmd}`)
-		return this.#tcp.send(frame(cmd, this.config.prefix ?? '', control && this.config.mode !== 'rccp1'))
-	}
-
-	/** Pan/tilt with signed speeds in percent; applies the invert settings. */
-	move(panPercent: number, tiltPercent: number): void {
-		const pan = this.config.invertPan ? -panPercent : panPercent
-		const tilt = this.config.invertTilt ? -tiltPercent : tiltPercent
-		if (this.send(panTiltCmd(pan, tilt))) this.setMoving(pan !== 0 || tilt !== 0)
-	}
-
-	setMoving(moving: boolean): void {
-		if (this.moving === moving) return
-		this.moving = moving
-		this.checkFeedbacks('moving')
-	}
-
-	selectCamera(camera: number): void {
-		if (this.send(selectCameraCmd(camera))) {
-			this.selectedCamera = camera
-			this.setVariableValues({ selected_camera: camera })
-			this.checkFeedbacks('selected_camera')
+	async scanNetwork(): Promise<void> {
+		try {
+			this.discovered = await discover()
+			this.setVariableValues({
+				discovered: this.discovered.map((d) => `${d.model} ${d.ip}`).join(', '),
+			})
+		} catch (e) {
+			this.log('debug', `Discovery failed: ${(e as Error).message}`)
 		}
 	}
 
-	shotRecalled(shot: number): void {
-		this.lastShot = shot
-		this.setVariableValues({ last_shot: shot })
-		this.checkFeedbacks('last_shot')
+	#headOptions(): Partial<HeadOptions> {
+		const c = this.config
+		const ep = resolveEndpoint(c)
+		return {
+			target: c.mode ?? 'direct',
+			model: ep.model ?? c.model ?? 'S4',
+			prefix: c.prefix ?? '',
+			invertPan: !!c.invertPan,
+			invertTilt: !!c.invertTilt,
+			columnAxis: c.columnAxis ?? 'X',
+			ramp: { attackMs: c.attackMs ?? 350, releaseMs: c.releaseMs ?? 450, curve: c.curve ?? 'cubic' },
+			moveCurve: c.curve ?? 'cubic',
+			shotMode: c.shotMode ?? 'module',
+			keyframes: c.keyframes ?? true,
+			defaultShotTimeMs: Math.round((c.defaultShotTime ?? 3) * 1000),
+			automationPage: c.automationPage ?? 0,
+			pollIntervalMs: c.pollInterval ?? 250,
+			allowLimitChanges: !!c.allowLimitChanges,
+			takeControl: !!c.takeControl,
+			camera: c.camera ?? 0,
+		}
 	}
 
-	#connect(): void {
+	#write(data: string | Buffer): boolean {
+		if (!this.#tcp?.isConnected) return false
+		return this.#tcp.send(typeof data === 'string' ? Buffer.from(data, 'latin1') : data)
+	}
+
+	#saveShots(shots: Map<number, StoredShot>): void {
+		this.config.shotStore = JSON.stringify(Object.fromEntries(shots))
+		this.saveConfig(this.config, undefined)
+		this.checkFeedbacks('shot_stored')
+	}
+
+	async #connect(): Promise<void> {
+		const seq = ++this.#connectSeq
 		this.#disconnect()
-		const { host, port } = this.config
+		const { host, port } = resolveEndpoint(this.config)
 		if (!host || !port) {
 			this.updateStatus(InstanceStatus.BadConfig, 'IP address and port required')
 			return
 		}
-
 		this.updateStatus(InstanceStatus.Connecting)
+
+		const ownership = this.config.ds4Ownership ?? 'off'
+		if (this.config.mode === 'direct' && ownership !== 'off' && port >= 3001 && port <= 3004) {
+			const owner = await ds4Owner(host, port, ownership === 'takeover')
+			if (seq !== this.#connectSeq) return
+			this.setVariableValues({ ds4_owner: owner })
+			this.log(
+				'info',
+				`DS-4 port ${port} owner: ${owner}${ownership === 'takeover' && owner !== '0' ? ' (taken over)' : ''}`,
+			)
+		}
+
 		const tcp = new TCPHelper(host, port, { reconnect: true, reconnect_interval: 2000 })
 		this.#tcp = tcp
-
 		tcp.on('status_change', (status, message) => {
 			this.updateStatus(status, message)
 			this.checkFeedbacks('connected')
 		})
-		tcp.on('error', (err) => {
-			this.log('error', `TCP: ${err.message}`)
-		})
+		tcp.on('error', (err) => this.log('error', `TCP: ${err.message}`))
 		tcp.on('connect', () => {
 			this.log('info', `Connected to ${host}:${port}`)
-			this.#lines.reset()
-			if (this.config.mode === 'rccp1' && this.config.camera > 0) this.selectCamera(this.config.camera)
-			if (this.config.takeControl) this.send(TAKE_CONTROL_CMD)
-			this.#startPolling()
+			this.head.onConnect()
+			this.checkFeedbacks('connected')
 		})
 		tcp.on('end', () => {
-			this.#stopPolling()
-			this.setMoving(false)
+			this.head.onDisconnect()
+			this.checkFeedbacks('connected')
 		})
-		tcp.on('data', (data) => {
-			for (const line of this.#lines.push(data.toString('latin1'))) this.#handleLine(line)
-		})
+		tcp.on('data', (data) => this.head.onData(data))
 	}
 
 	#disconnect(): void {
-		this.#stopPolling()
+		this.head?.onDisconnect()
 		this.#tcp?.destroy()
 		this.#tcp = undefined
 	}
 
-	#handleLine(line: string): void {
-		const msg = parseLine(line)
-		if (!msg) return
-		this.log('debug', `< ${line}`)
-		switch (msg.type) {
+	#onHeadChange(kind: ChangeKind): void {
+		const s = this.head.state
+		switch (kind) {
 			case 'position':
-				this.setVariableValues({ pan_position: msg.pan, tilt_position: msg.tilt })
-				if (msg.zoom !== undefined) this.setVariableValues({ zoom_position: msg.zoom, focus_position: msg.focus })
+				if (s.position) this.setVariableValues(positionVariables(s.position))
 				break
-			case 'sts12':
-				this.setVariableValues({ last_response: line.trim() })
+			case 'moving':
+				this.checkFeedbacks('moving')
 				break
-			case 'other':
-				this.setVariableValues({ last_response: msg.text })
+			case 'shot':
+				this.setVariableValues({
+					current_shot: s.shot.number >= 0 ? s.shot.number : '',
+					last_shot: s.shot.number >= 0 ? s.shot.number : '',
+					shot_status: s.shot.status,
+				})
+				this.checkFeedbacks('current_shot', 'last_shot', 'moving')
+				break
+			case 'columnHome':
+				this.setVariableValues({ column_home_phase: s.columnHome.phase, column_home_state: s.columnHome.text })
+				this.checkFeedbacks('column_home')
+				break
+			case 'limits':
+				this.setVariableValues({
+					limits_axis: s.limits.axis ?? '',
+					limits_enabled: s.limits.status.enabled === undefined ? '' : s.limits.status.enabled ? 'enabled' : 'disabled',
+					limits_upper: s.limits.status.upperSoft ?? '',
+					limits_lower: s.limits.status.lowerSoft ?? '',
+					limits_text: s.limits.text,
+				})
+				this.checkFeedbacks('limits_enabled')
+				break
+			case 'system':
+				this.setVariableValues({ system_error: s.systemError?.text ?? '' })
+				break
+			case 'response':
+				this.setVariableValues({ last_response: s.lastResponse })
+				break
+			case 'camera':
+				this.setVariableValues({ selected_camera: s.selectedCamera })
+				this.checkFeedbacks('selected_camera')
 				break
 		}
 	}
 
-	#startPolling(): void {
-		this.#stopPolling()
-		const interval = this.config.pollInterval
-		if (!interval || interval < 100) return
-		this.#pollTimer = setInterval(() => {
-			if (this.#tcp?.isConnected) this.#tcp.send(frame(QUERY_POSITION_CMD, this.config.prefix ?? ''))
-		}, interval)
+	#updateAllVariables(): void {
+		this.setVariableValues({
+			pan_position: '',
+			tilt_position: '',
+			zoom_position: '',
+			focus_position: '',
+			column_position: '',
+			aux_y_position: '',
+			iris_position: '',
+			black_position: '',
+			current_shot: '',
+			last_shot: '',
+			shot_status: 'none',
+			selected_camera: 0,
+			column_home_phase: 'idle',
+			column_home_state: '',
+			limits_axis: '',
+			limits_enabled: '',
+			limits_upper: '',
+			limits_lower: '',
+			limits_text: '',
+			system_error: '',
+			ds4_owner: '',
+			discovered: '',
+			last_response: '',
+		})
 	}
+}
 
-	#stopPolling(): void {
-		if (this.#pollTimer) clearInterval(this.#pollTimer)
-		this.#pollTimer = undefined
+function positionVariables(p: HeadPosition): Partial<VariablesSchema> {
+	return {
+		pan_position: p.pan,
+		tilt_position: p.tilt,
+		zoom_position: p.zoom,
+		focus_position: p.focus,
+		column_position: p.x,
+		aux_y_position: p.y,
+		iris_position: p.iris,
+		black_position: p.black,
 	}
+}
+
+export function parseShotStore(raw: string | undefined): Map<number, StoredShot> {
+	const out = new Map<number, StoredShot>()
+	if (!raw) return out
+	try {
+		const obj = JSON.parse(raw) as Record<string, StoredShot>
+		for (const [k, v] of Object.entries(obj)) {
+			if (v && typeof v === 'object' && v.pos && typeof v.timeMs === 'number') out.set(Number(k), v)
+		}
+	} catch {
+		/* ignore a broken store */
+	}
+	return out
 }
