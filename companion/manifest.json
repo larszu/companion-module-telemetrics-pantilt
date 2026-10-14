@@ -4,7 +4,7 @@
 	"id": "telemetrics-pantilt",
 	"name": "Telemetrics Pan/Tilt",
 	"shortname": "telemetrics",
-	"description": "Telemetrics robotic pan/tilt heads (PT-LP/PT-CP, DS-4) and RCCP-1 over TCP",
+	"description": "Telemetrics robotic pan/tilt heads (S4, S5), DS-4, network-serial bridges, RCCP-1 and the RCP automation port over TCP",
 	"version": "0.2.0",
 	"license": "MIT",
 	"repository": "git+https://github.com/larszu/companion-module-telemetrics-pantilt.git",
@@ -22,6 +22,6 @@
 	},
 	"legacyIds": [],
 	"manufacturer": "Telemetrics",
-	"products": ["PT-LP-S4", "PT-LP-S5", "PT-CP-S5", "DS-4", "RCCP-1"],
+	"products": ["PT-LP-S4", "PT-HP-S4", "PT-CP-S4", "PT-LP-S5", "PT-HP-S5", "PT-CP-S5", "RoboEye2", "DS-4", "RCCP-1"],
 	"keywords": ["ptz", "robotics", "pan tilt", "camera"]
 }
